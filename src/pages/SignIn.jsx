@@ -45,7 +45,7 @@ export default function SignIn() {
               autoComplete="username"
               value={sapNo}
               onChange={(e) => { setSapNo(e.target.value); setError(null) }}
-              placeholder="14537"
+              placeholder="XXXXX"
             />
           </Field>
 
