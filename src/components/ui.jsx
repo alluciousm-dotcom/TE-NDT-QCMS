@@ -93,20 +93,84 @@ export function Findings({ findings }) {
 }
 
 /* Magnitude across fixed categories, one hue. Axis labels carry identity;
-   color doesn't need to repeat it. */
-export function BarList({ rows }) {
+   color doesn't need to repeat it. onSelect (optional) makes rows clickable
+   filter controls — a native title attribute is the hover tooltip. */
+export function BarList({ rows, onSelect, selectedKey }) {
   const max = Math.max(1, ...rows.map((r) => r.value))
   return (
     <div className="barlist">
-      {rows.map((r) => (
-        <div className="barlist-row" key={r.label}>
-          <div className="barlist-label">{r.label}</div>
-          <div className="barlist-track">
-            <div className="barlist-fill" style={{ width: `${(r.value / max) * 100}%` }} />
+      {rows.map((r) => {
+        const key = r.key ?? r.label
+        const pct = Math.round((r.value / (max || 1)) * 100)
+        return (
+          <div
+            className={`barlist-row${onSelect ? ' clickable' : ''}${selectedKey === key ? ' is-selected' : ''}`}
+            key={key}
+            title={`${r.label}: ${r.value}`}
+            onClick={onSelect ? () => onSelect(key) : undefined}
+          >
+            <div className="barlist-label">{r.label}</div>
+            <div className="barlist-track">
+              <div className="barlist-fill" style={{ width: `${pct}%` }} />
+            </div>
+            <div className="barlist-value">{r.value}</div>
           </div>
-          <div className="barlist-value">{r.value}</div>
-        </div>
-      ))}
+        )
+      })}
+    </div>
+  )
+}
+
+/* Part-to-whole as a ring rather than a flat bar — same rule as StatusBar:
+   every segment has a title tooltip and a labelled legend entry, so color
+   is never the only way to tell segments apart. */
+export function Donut({ segments, size = 168, thickness = 24, centerLabel, centerSub }) {
+  const total = segments.reduce((n, s) => n + s.value, 0) || 1
+  const visible = segments.filter((s) => s.value > 0)
+  const r = (size - thickness) / 2
+  const c = size / 2
+  const circumference = 2 * Math.PI * r
+  let offset = 0
+
+  return (
+    <div className="donut-row">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={centerSub ?? 'breakdown'}>
+        <circle cx={c} cy={c} r={r} fill="none" stroke="var(--panel-2)" strokeWidth={thickness} />
+        {visible.map((s) => {
+          const frac = s.value / total
+          const dash = frac * circumference
+          const el = (
+            <circle
+              key={s.label}
+              cx={c} cy={c} r={r} fill="none"
+              className={`tone-${s.tone}`}
+              stroke="currentColor"
+              strokeWidth={thickness}
+              strokeDasharray={`${Math.max(dash - 2, 0)} ${circumference - dash + 2}`}
+              strokeDashoffset={-offset}
+              transform={`rotate(-90 ${c} ${c})`}
+            >
+              <title>{`${s.label}: ${s.value} (${Math.round(frac * 100)}%)`}</title>
+            </circle>
+          )
+          offset += dash
+          return el
+        })}
+        {centerLabel !== undefined && (
+          <>
+            <text x={c} y={centerSub ? c - 3 : c + 6} textAnchor="middle" className="donut-value">{centerLabel}</text>
+            {centerSub && <text x={c} y={c + 17} textAnchor="middle" className="donut-sub">{centerSub}</text>}
+          </>
+        )}
+      </svg>
+      <div className="statuslegend donut-legend">
+        {visible.map((s) => (
+          <div className="statuslegend-item" key={s.label}>
+            <span className={`statuslegend-swatch tone-${s.tone}`} />
+            {s.label} <span className="statuslegend-count">{s.value} ({Math.round((s.value / total) * 100)}%)</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

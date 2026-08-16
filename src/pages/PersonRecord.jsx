@@ -194,7 +194,7 @@ export default function PersonRecord() {
       <div className="page-head">
         <div>
           <p className="eyebrow">
-            <Link to="/">Roster</Link> / {person.sap_no ?? 'No SAP number'}
+            <Link to={profile.role === 'manager' ? '/roster' : '/'}>Roster</Link> / {person.sap_no ?? 'No SAP number'}
           </p>
           <h1>{person.full_name}</h1>
         </div>

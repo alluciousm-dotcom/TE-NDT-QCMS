@@ -326,6 +326,11 @@ textarea { min-height: 76px; resize: vertical; }
 .barlist-track { background: var(--panel-2); border-radius: 2px; height: 10px; overflow: hidden; }
 .barlist-fill { height: 100%; background: var(--steel); border-radius: 2px; min-width: 2px; }
 .barlist-value { font-family: var(--mono); font-size: 13px; text-align: right; color: var(--muted); }
+.barlist-row.clickable { cursor: pointer; border-radius: var(--r); }
+.barlist-row.clickable:hover .barlist-label { color: var(--steel); }
+.barlist-row.is-selected .barlist-label { color: var(--steel); font-weight: 600; }
+.barlist-row.is-selected .barlist-fill { background: var(--ink); }
+.barlist-row.is-selected .barlist-value { color: var(--ink); font-weight: 600; }
 
 /* --------------------------------------------------------- status bar */
 /* Part-to-whole across named states. Every segment ships with a labelled
@@ -338,11 +343,18 @@ textarea { min-height: 76px; resize: vertical; }
 .statuslegend-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 .statuslegend-count { font-family: var(--mono); color: var(--muted); }
 
-.tone-pass  { background: var(--pass); }
-.tone-watch { background: var(--watch); }
-.tone-fail  { background: var(--fail); }
-.tone-steel { background: var(--steel); }
-.tone-idle  { background: var(--idle); }
+.tone-pass  { background: var(--pass);  color: var(--pass); }
+.tone-watch { background: var(--watch); color: var(--watch); }
+.tone-fail  { background: var(--fail);  color: var(--fail); }
+.tone-steel { background: var(--steel); color: var(--steel); }
+.tone-idle  { background: var(--idle);  color: var(--idle); }
+
+/* ----------------------------------------------------------------- donut */
+
+.donut-row { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
+.donut-value { font-family: var(--mono); font-size: 26px; font-weight: 500; fill: var(--ink); }
+.donut-sub { font-family: var(--sans); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; fill: var(--muted); }
+.donut-legend { flex-direction: column; flex-wrap: nowrap; gap: 8px; margin-top: 0; flex: 1; min-width: 160px; }
 
 /* ------------------------------------------------------------- findings */
 

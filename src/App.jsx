@@ -19,6 +19,7 @@ function Shell({ profile, children }) {
   const navigate = useNavigate()
   const isManager = profile.role === 'manager'
   const isStaff = profile.role === 'staff'
+  const rosterPath = isManager ? '/roster' : '/'
 
   async function signOut() {
     await supabase.auth.signOut()
@@ -31,10 +32,10 @@ function Shell({ profile, children }) {
         <div className="topbar-inner">
           <div className="brand">TE_NDT_QCMS <span>PERSONNEL COMPLIANCE</span></div>
           <nav className="nav">
-            <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
+            {isManager && <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>Dashboard</NavLink>}
+            <NavLink to={rosterPath} end className={({ isActive }) => (isActive ? 'active' : '')}>
               {isStaff ? 'My record' : 'Roster'}
             </NavLink>
-            {isManager && <NavLink to="/dashboard" className={({ isActive }) => (isActive ? 'active' : '')}>Dashboard</NavLink>}
             {isManager && <NavLink to="/people" className={({ isActive }) => (isActive ? 'active' : '')}>People</NavLink>}
             {!isStaff && <NavLink to="/trail" className={({ isActive }) => (isActive ? 'active' : '')}>Audit trail</NavLink>}
             <NavLink to="/account" className={({ isActive }) => (isActive ? 'active' : '')}>
@@ -114,10 +115,10 @@ export default function App() {
     <SessionContext.Provider value={{ session, profile, refreshProfile }}>
       <Shell profile={profile}>
         <Routes>
-          <Route path="/" element={isStaff ? <MyRecord /> : <Roster />} />
+          <Route path="/" element={isStaff ? <MyRecord /> : profile.role === 'manager' ? <ManagerDashboard /> : <Roster />} />
+          {profile.role === 'manager' && <Route path="/roster" element={<Roster />} />}
           <Route path="/people/:id" element={<PersonRecord />} />
           <Route path="/people" element={profile.role === 'manager' ? <People /> : <Navigate to="/" />} />
-          <Route path="/dashboard" element={profile.role === 'manager' ? <ManagerDashboard /> : <Navigate to="/" />} />
           <Route path="/trail" element={isStaff ? <Navigate to="/" /> : <AuditTrail />} />
           <Route path="/account" element={<MyProfile />} />
           <Route path="*" element={<Navigate to="/" />} />
