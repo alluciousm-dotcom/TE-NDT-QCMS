@@ -31,7 +31,7 @@ export default function SignIn() {
   return (
     <div className="signin-wrap">
       <div className="signin">
-        <p className="eyebrow">TE_NDT_QCMS</p>
+        <p className="eyebrow">TE-NDT QCMS</p>
         <h1 className="brand-lg">Personnel compliance</h1>
         <p className="small muted" style={{ marginTop: 6, marginBottom: 22 }}>
           Certification records for inspection personnel. Sign in with your SAP number.

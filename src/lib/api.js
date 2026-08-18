@@ -78,7 +78,7 @@ export const signedUrl = (path, seconds = 60) =>
 /* Nothing here writes to a table directly. Each call is an RPC that performs
    the change and records the audit row in the same transaction. */
 
-export async function uploadDocument({ subjectId, documentType, file, issuedOn, expiresOn, neverExpires = false }) {
+export async function uploadDocument({ subjectId, documentType, file, issuedOn, expiresOn, neverExpires = false, method = null, level = null }) {
   const requestId = newRequestId()
   const hash = await sha256Hex(file)
   const ext = file.name.split('.').pop()?.toLowerCase() ?? 'bin'
@@ -100,6 +100,8 @@ export async function uploadDocument({ subjectId, documentType, file, issuedOn, 
     p_issued: issuedOn || null,
     p_expires: expiresOn || null,
     p_never_expires: neverExpires,
+    p_method: method || null,
+    p_level: level || null,
     p_request: requestId
   }).then(unwrap)
 
@@ -110,6 +112,11 @@ export const decideDocument = (documentId, status, reason) =>
   supabase.rpc('decide_document', {
     p_document: documentId, p_status: status,
     p_reason: reason ?? null, p_request: newRequestId()
+  }).then(unwrap)
+
+export const deleteDocument = (documentId, reason) =>
+  supabase.rpc('delete_document', {
+    p_document: documentId, p_reason: reason, p_request: newRequestId()
   }).then(unwrap)
 
 export const openAudit = (subjectId) =>
@@ -130,9 +137,9 @@ export const assignSupervisor = (supervisorId, staffId) =>
     p_supervisor: supervisorId, p_staff: staffId, p_request: newRequestId()
   }).then(unwrap)
 
-export const setNdtQualification = (subjectId, method, level) =>
+export const setNdtQualification = (subjectId, method, level, granted) =>
   supabase.rpc('set_ndt_qualification', {
-    p_subject: subjectId, p_method: method, p_level: level, p_request: newRequestId()
+    p_subject: subjectId, p_method: method, p_level: level, p_granted: granted, p_request: newRequestId()
   }).then(unwrap)
 
 export const updateProfileDetails = (subjectId, {

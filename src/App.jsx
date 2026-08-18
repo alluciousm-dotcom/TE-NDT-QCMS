@@ -30,11 +30,11 @@ function Shell({ profile, children }) {
     <div className="shell">
       <header className="topbar">
         <div className="topbar-inner">
-          <div className="brand">TE_NDT_QCMS <span>PERSONNEL COMPLIANCE</span></div>
+          <div className="brand">TE-NDT QCMS <span>PERSONNEL COMPLIANCE</span></div>
           <nav className="nav">
             {isManager && <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>Dashboard</NavLink>}
             <NavLink to={rosterPath} end className={({ isActive }) => (isActive ? 'active' : '')}>
-              {isStaff ? 'My record' : 'Roster'}
+              {isStaff ? 'My record' : 'Compliance'}
             </NavLink>
             {isManager && <NavLink to="/people" className={({ isActive }) => (isActive ? 'active' : '')}>People</NavLink>}
             {!isStaff && <NavLink to="/trail" className={({ isActive }) => (isActive ? 'active' : '')}>Audit trail</NavLink>}
@@ -45,7 +45,7 @@ function Shell({ profile, children }) {
                   style={{ width: 20, height: 20, borderRadius: '50%', objectFit: 'cover', verticalAlign: 'middle', marginRight: 6 }}
                 />
               )}
-              My profile
+              Account
             </NavLink>
             <div className="whoami">
               <strong>{profile.full_name}</strong>

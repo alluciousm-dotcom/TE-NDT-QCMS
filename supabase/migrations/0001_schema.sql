@@ -4,7 +4,7 @@
 create extension if not exists pgcrypto;
 
 create type public.user_role             as enum ('manager','supervisor','staff');
-create type public.doc_status            as enum ('pending','approved','rejected','superseded');
+create type public.doc_status            as enum ('pending','approved','rejected','superseded','deleted');
 create type public.audit_state           as enum ('open','passed','failed','reopened');
 create type public.ndt_method            as enum ('PT','MT','UT','RT');
 create type public.supervisor_discipline as enum ('QA','OPS');
@@ -92,16 +92,20 @@ create table public.staff_assignments (
 create index on public.staff_assignments (staff_id);
 
 -- --------------------------------------------------------- NDT method levels
--- One row per method a person is qualified in. No row means not qualified.
--- Set only through set_ndt_qualification (0002) so a level change is audited
--- the same way a role change is.
+-- One row per (method, level) a person actually holds. A person can hold
+-- more than one level of the same method at once — PT Level 1 and PT Level 2
+-- as two separate, independently certified rows — so level does not
+-- overwrite level the way a new method's row would; only a renewal of the
+-- exact same method+level replaces the earlier one. Set only through
+-- set_ndt_qualification (0002) so a change is audited the same way a role
+-- change is.
 
 create table public.staff_ndt_qualifications (
   subject_id  uuid not null references public.profiles(id) on delete cascade,
   method      public.ndt_method not null,
-  level       smallint not null check (level between 1 and 3),
+  level       smallint not null check (level between 1 and 4),
   updated_at  timestamptz not null default now(),
-  primary key (subject_id, method)
+  primary key (subject_id, method, level)
 );
 
 -- ---------------------------------------------------------- document types
@@ -115,6 +119,10 @@ create table public.document_types (
   requires_expiry          boolean not null default true,
   default_validity_months  integer,
   manager_only             boolean not null default false,
+  -- A person can hold this document once per NDT method rather than once
+  -- overall — a Level 1 PT cert and a Level 2 MT cert coexist, neither
+  -- supersedes the other. Only a new submission for the SAME method does.
+  per_method               boolean not null default false,
   review_prompt            text,
   sort_order               integer not null default 100
 );
@@ -122,20 +130,20 @@ create table public.document_types (
 -- manager_only: only a manager may upload this type (enforced in record_upload,
 -- 0002). Today that is the log book only; staff and supervisors upload the rest.
 insert into public.document_types
-  (code, name, description, requires_expiry, default_validity_months, manager_only, sort_order, review_prompt) values
-  ('Q-Cert',    'Qualification certificate', 'NDT method qualification certificate (PT/MT/UT/RT), per ASNT or equivalent scheme.', true,  60,   false, 10,
+  (code, name, description, requires_expiry, default_validity_months, manager_only, per_method, sort_order, review_prompt) values
+  ('Q-Cert',    'Qualification certificate', 'NDT method qualification certificate (PT/MT/UT/RT), per ASNT or equivalent scheme.', true,  60,   false, true,  10,
    'Confirm the certified method and level match the person''s recorded NDT qualification, and the certificate carries an issue and expiry date.'),
-  ('Exam-R',    'Exam results',              'Results of the qualifying examination for the certified method.',                    false, null, false, 20,
+  ('Exam-R',    'Exam results',              'Results of the qualifying examination for the certified method.',                    false, null, false, false, 20,
    'Confirm the candidate name, method examined and a pass outcome are present.'),
-  ('Class-Tr',  'Class training proof',      'Evidence of attendance on the accredited training course.',                          false, null, false, 30,
+  ('Class-Tr',  'Class training proof',      'Evidence of attendance on the accredited training course.',                          false, null, false, false, 30,
    'Confirm the training provider, course dates and candidate name are present.'),
-  ('Log-B',     'Log book',                  'Logged inspection hours. Maintained and uploaded by the manager only.',              false, null, true,  40,
+  ('Log-B',     'Log book',                  'Logged inspection hours. Maintained and uploaded by the manager only.',              false, null, true,  false, 40,
    'Confirm logged hours are itemised by date and method and are signed off.'),
-  ('ID-copy',   'Copy of ID',                'Passport or national identity document.',                                            false, null, false, 50,
+  ('ID-copy',   'Copy of ID',                'Passport or national identity document.',                                            false, null, false, false, 50,
    'Confirm the document is a passport or national ID and is legible. Read the ID number if printed.'),
-  ('Eye-test',  'Eye test certificate',      'Near and colour vision acuity, required annually.',                                  true,  12,   false, 60,
+  ('Eye-test',  'Eye test certificate',      'Near and colour vision acuity, required annually.',                                  true,  12,   false, false, 60,
    'Confirm both near vision acuity and colour perception results are recorded, and the test date.'),
-  ('Employ-Pr', 'Proof of employment',       'Confirmation of current employment status.',                                         false, null, false, 70,
+  ('Employ-Pr', 'Proof of employment',       'Confirmation of current employment status.',                                         false, null, false, false, 70,
    'Confirm the letter names the employer and the employee, states their position and a start of employment date. Read the ID number if printed.');
 
 -- --------------------------------------------------------------- documents
@@ -152,6 +160,13 @@ create table public.documents (
   issued_on        date,
   expires_on       date,
   never_expires    boolean not null default false,
+  -- Which NDT method (and level) this document covers. Only set (and only
+  -- meaningful) when document_types.per_method is true; null everywhere
+  -- else. Approving a per_method document writes this straight into
+  -- staff_ndt_qualifications (see decide_document, 0002) — the certificate
+  -- and the recorded qualification would otherwise silently drift apart.
+  method           public.ndt_method,
+  level            smallint check (level between 1 and 4),
   status           public.doc_status not null default 'pending',
   uploaded_by      uuid not null references public.profiles(id),
   superseded_by    uuid references public.documents(id),
@@ -181,8 +196,18 @@ create table public.compliance_audits (
 create index on public.compliance_audits (subject_id, opened_at desc);
 
 -- --------------------------------------------------------- compliance view
--- One row per staff member per mandatory document type, with the current state
--- of their most recent non-superseded submission. This is what the dashboard reads.
+-- One row per staff member per mandatory document requirement, with the
+-- current state of its most recent non-superseded submission.
+--
+-- For an ordinary (non per_method) type that's one row per person, as before.
+-- For a per_method type (Q-Cert today) it's one row per (method, level)
+-- combination the person EITHER holds a recorded qualification for OR has
+-- already submitted a document for — a person can hold more than one level
+-- of the same method at once (PT Level 1 and PT Level 2 both on file), so
+-- these are independent rows, not one overwriting the other. Uploading a PT
+-- Level 2 certificate surfaces "Qualification certificate (PT · Level 2)"
+-- immediately, even before a manager confirms it, alongside any existing
+-- PT Level 1 row rather than replacing it. This is what the dashboard reads.
 
 create or replace view public.compliance_matrix
 with (security_invoker = on) as
@@ -193,7 +218,10 @@ select
   p.depot_code,
   dt.id               as document_type_id,
   dt.code,
-  dt.name             as document_name,
+  case when dt.per_method and req.method is not null
+       then dt.name || ' (' || req.method || ' · Level ' || req.level::text || ')'
+       else dt.name
+  end                 as document_name,
   dt.requires_expiry,
   dt.sort_order,
   d.id                as document_id,
@@ -212,15 +240,31 @@ select
   end as state,
   case when d.never_expires or d.expires_on is null then null
        else (d.expires_on - current_date) end as days_remaining,
-  d.never_expires
+  d.never_expires,
+  req.method,
+  req.level
 from public.profiles p
 cross join public.document_types dt
+cross join lateral (
+  select nq.method, nq.level
+  from public.staff_ndt_qualifications nq
+  where dt.per_method and nq.subject_id = p.id
+  union
+  select dd.method, dd.level
+  from public.documents dd
+  where dt.per_method and dd.subject_id = p.id and dd.document_type_id = dt.id
+    and dd.method is not null and dd.level is not null
+  union all
+  select null::public.ndt_method, null::smallint where not dt.per_method
+) req
 left join lateral (
   select dd.*
   from public.documents dd
   where dd.subject_id = p.id
     and dd.document_type_id = dt.id
-    and dd.status <> 'superseded'
+    and dd.status not in ('superseded', 'deleted')
+    and dd.method is not distinct from req.method
+    and dd.level is not distinct from req.level
   order by dd.created_at desc
   limit 1
 ) d on true

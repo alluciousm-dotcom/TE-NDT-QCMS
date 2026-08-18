@@ -63,14 +63,14 @@ export function ValidityStrip({ rows, onSelect }) {
             ? ` \u2014 ${expiryPhrase(r.days_remaining)}` : '')
         return (
           <div
-            key={r.document_type_id}
+            key={`${r.document_type_id}-${r.method ?? ''}-${r.level ?? ''}`}
             role="listitem"
             className={`strip-cell s-${r.state}`}
             title={title}
             aria-label={title}
             onClick={onSelect ? () => onSelect(r) : undefined}
           >
-            {r.code.split('-')[0].slice(0, 4)}
+            {r.method ? `${r.method}${r.level ?? ''}` : r.code.split('-')[0].slice(0, 4)}
           </div>
         )
       })}
@@ -111,7 +111,7 @@ export function BarList({ rows, onSelect, selectedKey }) {
           >
             <div className="barlist-label">{r.label}</div>
             <div className="barlist-track">
-              <div className="barlist-fill" style={{ width: `${pct}%` }} />
+              <div className={`barlist-fill${r.tone ? ` tone-${r.tone}` : ''}`} style={{ width: `${pct}%` }} />
             </div>
             <div className="barlist-value">{r.value}</div>
           </div>
@@ -124,7 +124,7 @@ export function BarList({ rows, onSelect, selectedKey }) {
 /* Part-to-whole as a ring rather than a flat bar — same rule as StatusBar:
    every segment has a title tooltip and a labelled legend entry, so color
    is never the only way to tell segments apart. */
-export function Donut({ segments, size = 168, thickness = 24, centerLabel, centerSub }) {
+export function Donut({ segments, size = 168, thickness = 24, centerLabel, centerSub, onSelect, selectedKey }) {
   const total = segments.reduce((n, s) => n + s.value, 0) || 1
   const visible = segments.filter((s) => s.value > 0)
   const r = (size - thickness) / 2
@@ -137,18 +137,21 @@ export function Donut({ segments, size = 168, thickness = 24, centerLabel, cente
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={centerSub ?? 'breakdown'}>
         <circle cx={c} cy={c} r={r} fill="none" stroke="var(--panel-2)" strokeWidth={thickness} />
         {visible.map((s) => {
+          const key = s.key ?? s.label
           const frac = s.value / total
           const dash = frac * circumference
+          const isSelected = selectedKey === key
           const el = (
             <circle
-              key={s.label}
+              key={key}
               cx={c} cy={c} r={r} fill="none"
-              className={`tone-${s.tone}`}
+              className={`tone-${s.tone}${onSelect ? ' donut-seg-clickable' : ''}`}
               stroke="currentColor"
-              strokeWidth={thickness}
+              strokeWidth={isSelected ? thickness + 4 : thickness}
               strokeDasharray={`${Math.max(dash - 2, 0)} ${circumference - dash + 2}`}
               strokeDashoffset={-offset}
               transform={`rotate(-90 ${c} ${c})`}
+              onClick={onSelect ? () => onSelect(key) : undefined}
             >
               <title>{`${s.label}: ${s.value} (${Math.round(frac * 100)}%)`}</title>
             </circle>
@@ -164,12 +167,19 @@ export function Donut({ segments, size = 168, thickness = 24, centerLabel, cente
         )}
       </svg>
       <div className="statuslegend donut-legend">
-        {visible.map((s) => (
-          <div className="statuslegend-item" key={s.label}>
-            <span className={`statuslegend-swatch tone-${s.tone}`} />
-            {s.label} <span className="statuslegend-count">{s.value} ({Math.round((s.value / total) * 100)}%)</span>
-          </div>
-        ))}
+        {visible.map((s) => {
+          const key = s.key ?? s.label
+          return (
+            <div
+              className={`statuslegend-item${onSelect ? ' clickable' : ''}${selectedKey === key ? ' is-selected' : ''}`}
+              key={key}
+              onClick={onSelect ? () => onSelect(key) : undefined}
+            >
+              <span className={`statuslegend-swatch tone-${s.tone}`} />
+              {s.label} <span className="statuslegend-count">{s.value} ({Math.round((s.value / total) * 100)}%)</span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

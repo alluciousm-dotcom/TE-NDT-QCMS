@@ -69,7 +69,7 @@ export default function MyRecord() {
             </thead>
             <tbody>
               {outstanding.map((r) => (
-                <tr key={r.document_type_id}>
+                <tr key={`${r.document_type_id}-${r.method ?? ''}-${r.level ?? ''}`}>
                   <td>{r.document_name}</td>
                   <td><Pill state={r.state} /></td>
                   <td className="small muted">
@@ -108,7 +108,7 @@ export default function MyRecord() {
             <tbody>
               {docs.map((d) => (
                 <tr key={d.id}>
-                  <td>{d.document_types?.name}</td>
+                  <td>{d.document_types?.name}{d.method ? ` (${d.method}${d.level ? ` · Level ${d.level}` : ''})` : ''}</td>
                   <td className="mono muted">{d.file_name}</td>
                   <td className="mono">{formatDate(d.expires_on)}</td>
                   <td>

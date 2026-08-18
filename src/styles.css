@@ -1,4 +1,4 @@
-/* TE_NDT_QCMS compliance
+/* TE-NDT QCMS compliance
    Visual direction: an inspection instrument panel. Hairline rules, tight
    tracking, monospaced data, one signal colour per state. Certificates in this
    trade are read as gauges: valid, watch, lapsed. The interface says the same. */
@@ -238,7 +238,7 @@ td.num, th.num { font-family: var(--mono); font-size: 13px; text-align: right; }
 .pill.expiring, .pill.needs_review, .pill.watch { background: var(--watch-tint); color: var(--watch); border-color: #e6d2a8; }
 .pill.expired, .pill.rejected, .pill.failed, .pill.fail, .pill.error { background: var(--fail-tint); color: var(--fail); border-color: #e5bfbc; }
 .pill.pending, .pill.open, .pill.reopened { background: var(--steel-tint); color: var(--steel); border-color: #c2d5e3; }
-.pill.missing, .pill.superseded { background: var(--idle-tint); color: var(--idle); border-color: var(--line); }
+.pill.missing, .pill.superseded, .pill.deleted { background: var(--idle-tint); color: var(--idle); border-color: var(--line); }
 
 /* --------------------------------------------------------------- controls */
 
@@ -340,6 +340,10 @@ textarea { min-height: 76px; resize: vertical; }
 .statusbar-seg { height: 100%; min-width: 3px; }
 .statuslegend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 14px; }
 .statuslegend-item { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.statuslegend-item.clickable { cursor: pointer; }
+.statuslegend-item.clickable:hover { text-decoration: underline; }
+.statuslegend-item.is-selected { font-weight: 600; }
+.donut-seg-clickable { cursor: pointer; }
 .statuslegend-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 .statuslegend-count { font-family: var(--mono); color: var(--muted); }
 
@@ -349,12 +353,38 @@ textarea { min-height: 76px; resize: vertical; }
 .tone-steel { background: var(--steel); color: var(--steel); }
 .tone-idle  { background: var(--idle);  color: var(--idle); }
 
+/* Categorical identity (region, role, method) — 8 fixed hues in a fixed
+   order, validated for colorblind-safe adjacent separation as a ring
+   (donut) and as a linear chain (bars): scripts/validate_palette.js from
+   the dataviz skill, both the linear chain and the wrap-around pair.
+   Never cycle or reassign these by rank — a hue is tied to its slot. */
+.tone-cat-1 { background: #2a78d6; color: #2a78d6; }
+.tone-cat-2 { background: #eb6834; color: #eb6834; }
+.tone-cat-3 { background: #1baf7a; color: #1baf7a; }
+.tone-cat-4 { background: #eda100; color: #eda100; }
+.tone-cat-5 { background: #e87ba4; color: #e87ba4; }
+.tone-cat-6 { background: #008300; color: #008300; }
+.tone-cat-7 { background: #4a3aa7; color: #4a3aa7; }
+.tone-cat-8 { background: #e34948; color: #e34948; }
+
 /* ----------------------------------------------------------------- donut */
 
 .donut-row { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
 .donut-value { font-family: var(--mono); font-size: 26px; font-weight: 500; fill: var(--ink); }
 .donut-sub { font-family: var(--sans); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; fill: var(--muted); }
 .donut-legend { flex-direction: column; flex-wrap: nowrap; gap: 8px; margin-top: 0; flex: 1; min-width: 160px; }
+
+/* --------------------------------------------------------- doc preview */
+/* Inline, not a new tab: window.open() after an await is silently blocked
+   by most browsers since it no longer counts as a direct result of a click. */
+
+.doc-preview { margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+.doc-preview img { max-width: 100%; max-height: 70vh; display: block; margin: 0 auto; border-radius: 2px; }
+/* Plain block + margin auto, not flex centering: a flex parent with
+   overflow:auto clips the far side of content wider than the container,
+   making it impossible to scroll all the way to it. */
+.pdf-scroll { max-height: 70vh; overflow: auto; border: 1px solid var(--line); border-radius: 2px; background: var(--panel-2); padding: 8px; }
+.pdf-canvas { display: block; margin: 0 auto; }
 
 /* ------------------------------------------------------------- findings */
 

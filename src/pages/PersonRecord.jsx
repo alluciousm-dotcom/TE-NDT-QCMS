@@ -2,13 +2,17 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import {
   getPersonMatrix, getProfile, listDocuments, listDocumentTypes, listReviews,
-  listAudits, decideDocument, openAudit, decideAudit, signedUrl, logRecordView, runAiReview,
+  listAudits, decideDocument, deleteDocument, openAudit, decideAudit, signedUrl, logRecordView, runAiReview,
   listDepots, updateProfileDetails, listNdtQualifications, setNdtQualification, recordEmploymentEnd
 } from '../lib/api'
 import { Panel, Loading, ErrorNote, Pill, ValidityStrip, Findings, Field, Empty } from '../components/ui'
 import UploadForm from '../components/UploadForm'
+import PdfPreview from '../components/PdfPreview'
 import { formatDate, formatDateTime, expiryPhrase } from '../lib/format'
 import { useSession } from '../App'
+
+const NDT_METHODS = ['PT', 'MT', 'UT', 'RT']
+const NDT_LEVELS = [1, 2, 3, 4]
 
 function ReviewSummary({ review }) {
   if (!review) return <p className="small muted">Not reviewed yet.</p>
@@ -43,6 +47,10 @@ export default function PersonRecord() {
   const { id } = useParams()
   const { profile } = useSession()
   const isManager = profile.role === 'manager'
+  // A supervisor only ever loads data for people they supervise — RLS sees
+  // to that — so if this page has data, they're allowed to be here. The
+  // delete_document RPC re-checks this server side regardless.
+  const canDelete = profile.role === 'manager' || profile.role === 'supervisor'
 
   const [person, setPerson] = useState(null)
   const [matrix, setMatrix] = useState(null)
@@ -57,10 +65,19 @@ export default function PersonRecord() {
   const [reason, setReason] = useState({})
   const [notes, setNotes] = useState('')
 
+  const [openDocId, setOpenDocId] = useState(null)
+  const [previewUrls, setPreviewUrls] = useState({})
+  const [previewErrors, setPreviewErrors] = useState({})
+
   const [details, setDetails] = useState(null)
   const [detailsBusy, setDetailsBusy] = useState(false)
   const [detailsSaved, setDetailsSaved] = useState(false)
-  const [qualLevels, setQualLevels] = useState({ PT: '', MT: '', UT: '', RT: '' })
+  // Keyed "METHOD-LEVEL" -> true. A person can hold more than one level of
+  // the same method at once, so this is a set of independent toggles, not
+  // one dropdown per method. initialQualSelections is the loaded baseline;
+  // saveQualifications diffs against it to know what actually changed.
+  const [qualSelections, setQualSelections] = useState({})
+  const [initialQualSelections, setInitialQualSelections] = useState({})
   const [qualBusy, setQualBusy] = useState(false)
   const [endedOn, setEndedOn] = useState('')
   const [endBusy, setEndBusy] = useState(false)
@@ -77,12 +94,10 @@ export default function PersonRecord() {
           fullName: p.full_name ?? '', sapNo: p.sap_no ?? '', depotCode: p.depot_code ?? '',
           idNumber: p.id_number ?? '', position: p.position ?? '', supervisorDiscipline: p.supervisor_discipline ?? ''
         })
-        setQualLevels({
-          PT: q.find((x) => x.method === 'PT')?.level ?? '',
-          MT: q.find((x) => x.method === 'MT')?.level ?? '',
-          UT: q.find((x) => x.method === 'UT')?.level ?? '',
-          RT: q.find((x) => x.method === 'RT')?.level ?? ''
-        })
+        const sel = {}
+        q.forEach((x) => { sel[`${x.method}-${x.level}`] = true })
+        setQualSelections(sel)
+        setInitialQualSelections(sel)
       })
       .catch((e) => setError(e.message))
   }, [id])
@@ -103,17 +118,48 @@ export default function PersonRecord() {
     } catch (e) { setError(e.message) } finally { setBusy(null) }
   }
 
+  async function remove(doc) {
+    setError(null)
+    const text = reason[doc.id]?.trim()
+    if (!text) {
+      setError('Say why this document is being deleted. It stays visible with that reason attached.')
+      return
+    }
+    if (!window.confirm(`Delete "${doc.file_name}"? It will drop off ${person.full_name}'s active record. This can't be undone from here.`)) {
+      return
+    }
+    setBusy(doc.id)
+    try {
+      await deleteDocument(doc.id, text)
+      setReason((r) => ({ ...r, [doc.id]: '' }))
+      load()
+    } catch (e) { setError(e.message) } finally { setBusy(null) }
+  }
+
   async function recheck(docId) {
     setBusy(docId)
     try { await runAiReview(docId); load() }
     catch (e) { setError(e.message) } finally { setBusy(null) }
   }
 
-  async function view(path) {
+  // Renders inline instead of window.open — a new tab triggered after an
+  // await is silently blocked by most browsers since it no longer counts as
+  // a direct result of the click. A signed link is fetched once per document
+  // and cached; "Refresh" gets a fresh one if the 3-minute link has lapsed.
+  async function loadPreview(doc) {
+    setPreviewErrors((p) => ({ ...p, [doc.id]: null }))
     try {
-      const { signedUrl: url } = await signedUrl(path, 60)
-      window.open(url, '_blank', 'noopener')
-    } catch (e) { setError(e.message) }
+      const { signedUrl: url } = await signedUrl(doc.storage_path, 180)
+      setPreviewUrls((p) => ({ ...p, [doc.id]: url }))
+    } catch (e) {
+      setPreviewErrors((p) => ({ ...p, [doc.id]: e.message }))
+    }
+  }
+
+  function toggleView(doc) {
+    if (openDocId === doc.id) { setOpenDocId(null); return }
+    setOpenDocId(doc.id)
+    if (!previewUrls[doc.id]) loadPreview(doc)
   }
 
   async function audit(action) {
@@ -160,11 +206,13 @@ export default function PersonRecord() {
     setError(null)
     setQualBusy(true)
     try {
-      const methods = ['PT', 'MT', 'UT', 'RT']
-      for (const method of methods) {
-        const current = quals.find((q) => q.method === method)?.level ?? null
-        const next = qualLevels[method] === '' ? null : Number(qualLevels[method])
-        if (next !== current) await setNdtQualification(id, method, next)
+      for (const method of NDT_METHODS) {
+        for (const level of NDT_LEVELS) {
+          const key = `${method}-${level}`
+          const was = !!initialQualSelections[key]
+          const now = !!qualSelections[key]
+          if (was !== now) await setNdtQualification(id, method, level, now)
+        }
       }
       load()
     } catch (e) { setError(e.message) } finally { setQualBusy(false) }
@@ -194,7 +242,7 @@ export default function PersonRecord() {
       <div className="page-head">
         <div>
           <p className="eyebrow">
-            <Link to={profile.role === 'manager' ? '/roster' : '/'}>Roster</Link> / {person.sap_no ?? 'No SAP number'}
+            <Link to={profile.role === 'manager' ? '/roster' : '/'}>Compliance</Link> / {person.sap_no ?? 'No SAP number'}
           </p>
           <h1>{person.full_name}</h1>
         </div>
@@ -272,25 +320,39 @@ export default function PersonRecord() {
         </Panel>
       )}
 
-      <Panel title="NDT method qualifications">
+      <Panel
+        title="NDT method qualifications"
+        action={<span className="small muted">A person can hold more than one level of the same method.</span>}
+      >
         <div className="grid grid-2">
-          {['PT', 'MT', 'UT', 'RT'].map((method) => (
-            <Field key={method} label={method}>
-              {isManager ? (
-                <select
-                  value={qualLevels[method]}
-                  onChange={(e) => setQualLevels((q) => ({ ...q, [method]: e.target.value }))}
-                >
-                  <option value="">Not qualified</option>
-                  <option value="1">Level 1</option>
-                  <option value="2">Level 2</option>
-                  <option value="3">Level 3</option>
-                </select>
-              ) : (
-                <p className="mono">{qualLevels[method] ? `Level ${qualLevels[method]}` : 'Not qualified'}</p>
-              )}
-            </Field>
-          ))}
+          {NDT_METHODS.map((method) => {
+            const heldLevels = NDT_LEVELS.filter((level) => qualSelections[`${method}-${level}`])
+            return (
+              <Field key={method} label={method}>
+                {isManager ? (
+                  <div className="row">
+                    {NDT_LEVELS.map((level) => {
+                      const key = `${method}-${level}`
+                      return (
+                        <label key={level} className="row" style={{ gap: 4, fontWeight: 400 }}>
+                          <input
+                            type="checkbox" style={{ width: 'auto' }}
+                            checked={!!qualSelections[key]}
+                            onChange={(e) => setQualSelections((s) => ({ ...s, [key]: e.target.checked }))}
+                          />
+                          L{level}
+                        </label>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="mono">
+                    {heldLevels.length ? heldLevels.map((l) => `Level ${l}`).join(', ') : 'Not qualified'}
+                  </p>
+                )}
+              </Field>
+            )
+          })}
         </div>
         {isManager && (
           <div className="row" style={{ marginTop: 12 }}>
@@ -383,7 +445,9 @@ export default function PersonRecord() {
                 <div key={d.id} style={{ borderBottom: '1px solid var(--line)', padding: '16px 0' }}>
                   <div className="row" style={{ justifyContent: 'space-between' }}>
                     <div>
-                      <div style={{ fontWeight: 500 }}>{d.document_types?.name}</div>
+                      <div style={{ fontWeight: 500 }}>
+                        {d.document_types?.name}{d.method ? ` (${d.method}${d.level ? ` · Level ${d.level}` : ''})` : ''}
+                      </div>
                       <div className="mono muted">
                         {d.file_name} · issued {formatDate(d.issued_on)} · {expiryPhrase(
                           d.expires_on ? Math.round((new Date(d.expires_on) - new Date()) / 86400000) : null
@@ -392,9 +456,47 @@ export default function PersonRecord() {
                     </div>
                     <div className="row">
                       <Pill state={d.status} />
-                      <button className="small" onClick={() => view(d.storage_path)}>Open file</button>
+                      <button className="small" onClick={() => toggleView(d)}>
+                        {openDocId === d.id ? 'Hide' : 'View'}
+                      </button>
                     </div>
                   </div>
+
+                  {openDocId === d.id && (
+                    <div className="doc-preview">
+                      {previewErrors[d.id] ? (
+                        <ErrorNote
+                          error={previewErrors[d.id]}
+                          onDismiss={() => setPreviewErrors((p) => ({ ...p, [d.id]: null }))}
+                        />
+                      ) : !previewUrls[d.id] ? (
+                        <p className="small muted">Loading preview…</p>
+                      ) : (d.mime_type ?? '').includes('pdf') ? (
+                        <PdfPreview url={previewUrls[d.id]} />
+                      ) : (d.mime_type ?? '').startsWith('image/') && !(d.mime_type ?? '').includes('heic') ? (
+                        <img
+                          src={previewUrls[d.id]}
+                          alt={d.file_name}
+                          onError={() => setPreviewErrors((p) => ({
+                            ...p, [d.id]: 'Could not render a preview for this file. Try "Open in a new tab" below.'
+                          }))}
+                        />
+                      ) : (
+                        <p className="small muted">
+                          Preview isn't available for this file type ({d.mime_type ?? 'unknown'}).
+                          Use "Open in a new tab" below.
+                        </p>
+                      )}
+                      {previewUrls[d.id] && !previewErrors[d.id] && (
+                        <div className="row" style={{ marginTop: 10 }}>
+                          <a href={previewUrls[d.id]} target="_blank" rel="noopener noreferrer" className="small">
+                            Open in a new tab
+                          </a>
+                          <button className="link" onClick={() => loadPreview(d)}>Refresh link</button>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div style={{ marginTop: 12 }}>
                     <ReviewSummary review={review} />
@@ -402,7 +504,7 @@ export default function PersonRecord() {
 
                   {isManager && d.status === 'pending' && (
                     <div style={{ marginTop: 14 }}>
-                      <Field label="Reason (required to reject)">
+                      <Field label="Reason (required to reject or delete)">
                         <input
                           value={reason[d.id] ?? ''}
                           onChange={(e) => setReason((r) => ({ ...r, [d.id]: e.target.value }))}
@@ -419,13 +521,51 @@ export default function PersonRecord() {
                         <button className="small" disabled={busy === d.id} onClick={() => recheck(d.id)}>
                           Run the check again
                         </button>
+                        <button className="reject" disabled={busy === d.id} onClick={() => remove(d)}>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {!isManager && canDelete && d.status === 'pending' && (
+                    <div style={{ marginTop: 14 }}>
+                      <Field label="Reason (required to delete)">
+                        <input
+                          value={reason[d.id] ?? ''}
+                          onChange={(e) => setReason((r) => ({ ...r, [d.id]: e.target.value }))}
+                          placeholder="Wrong file, uploaded by mistake"
+                        />
+                      </Field>
+                      <div className="row" style={{ marginTop: 10 }}>
+                        <button className="reject" disabled={busy === d.id} onClick={() => remove(d)}>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {canDelete && d.status === 'rejected' && (
+                    <div style={{ marginTop: 14 }}>
+                      <Field label="Reason (required to delete)">
+                        <input
+                          value={reason[d.id] ?? ''}
+                          onChange={(e) => setReason((r) => ({ ...r, [d.id]: e.target.value }))}
+                          placeholder="Duplicate of another submission"
+                        />
+                      </Field>
+                      <div className="row" style={{ marginTop: 10 }}>
+                        <button className="reject" disabled={busy === d.id} onClick={() => remove(d)}>
+                          Delete
+                        </button>
                       </div>
                     </div>
                   )}
 
                   {d.status !== 'pending' && d.decided_at && (
                     <p className="small muted" style={{ marginTop: 10 }}>
-                      {d.status === 'approved' ? 'Approved' : 'Rejected'} {formatDateTime(d.decided_at)}
+                      {d.status === 'approved' ? 'Approved' : d.status === 'deleted' ? 'Deleted' : 'Rejected'}
+                      {' '}{formatDateTime(d.decided_at)}
                       {d.decision_reason ? `: ${d.decision_reason}` : ''}
                     </p>
                   )}

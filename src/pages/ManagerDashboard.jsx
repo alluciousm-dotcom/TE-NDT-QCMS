@@ -5,6 +5,14 @@ import {
 } from '../lib/api'
 import { Panel, Loading, ErrorNote, Readout, BarList, StatusBar, Donut } from '../components/ui'
 import { STATE_LABEL } from '../lib/format'
+import { buildExportRows, buildReportRows, downloadCsv, downloadExcel, downloadPdf, downloadWord } from '../lib/export'
+
+const EXPORT_FORMATS = [
+  { value: 'csv', label: 'CSV' },
+  { value: 'excel', label: 'Excel (.xlsx)' },
+  { value: 'pdf', label: 'PDF report' },
+  { value: 'word', label: 'Word report (.docx)' }
+]
 
 const METHODS = ['PT', 'MT', 'UT', 'RT']
 
@@ -17,6 +25,8 @@ export default function ManagerDashboard() {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [region, setRegion] = useState('')
+  const [exportFormat, setExportFormat] = useState('csv')
+  const [exporting, setExporting] = useState(false)
 
   useEffect(() => {
     Promise.all([listPeople(), listDepots(), getComplianceMatrix(), listAllQualifications(), listAllAudits()])
@@ -60,18 +70,27 @@ export default function ManagerDashboard() {
     { label: '61–90 days', tone: 'steel', value: sMatrix.filter((r) => r.days_remaining !== null && r.days_remaining > 60 && r.days_remaining <= 90).length }
   ]
 
-  const methodRows = METHODS.map((m) => ({
+  // Color follows the entity, never its rank: each method/region/role keeps
+  // the same hue regardless of how the counts sort, so a slot never
+  // "repaints" as numbers move around between visits.
+  // Distinct people, not rows: someone holding both PT Level 1 and PT Level 2
+  // is one qualified person, not two.
+  const methodRows = METHODS.map((m, i) => ({
     label: m,
-    value: sQuals.filter((q) => q.method === m).length
+    tone: `cat-${i + 1}`,
+    value: new Set(sQuals.filter((q) => q.method === m).map((q) => q.subject_id)).size
   }))
 
   const depotRows = depots
-    .map((d) => ({ key: d.code, label: `${d.name} (${d.code})`, value: people.filter((p) => p.depot_code === d.code).length }))
+    .map((d, i) => ({
+      key: d.code, label: `${d.name} (${d.code})`, tone: `cat-${i + 1}`,
+      value: people.filter((p) => p.depot_code === d.code).length
+    }))
     .filter((r) => r.value > 0)
     .sort((a, b) => b.value - a.value)
 
-  const roleRows = ['staff', 'supervisor', 'manager'].map((role) => ({
-    label: role, value: sPeople.filter((p) => p.role === role).length
+  const roleRows = ['staff', 'supervisor', 'manager'].map((role, i) => ({
+    key: role, label: role, tone: `cat-${i + 1}`, value: sPeople.filter((p) => p.role === role).length
   }))
 
   const openAudits = sAudits.filter((a) => a.state === 'open' || a.state === 'reopened').length
@@ -81,6 +100,40 @@ export default function ManagerDashboard() {
   const passRate = decidedAudits ? Math.round((passedAudits / decidedAudits) * 100) : null
 
   const regionName = region ? depots.find((d) => d.code === region)?.name ?? region : null
+
+  const exportFilename = `te-ndt-qcms-compliance-${region || 'all-regions'}-${new Date().toISOString().slice(0, 10)}`
+  const exportRows = () => buildExportRows({ people: sPeople, depots, matrix: sMatrix, quals: sQuals })
+  const reportSummary = [
+    ['Personnel tracked', trackedIds.size],
+    ['Not cleared for site', blockingIds.size],
+    ['Expiring within 90 days', expiringSoonIds.size],
+    ['Awaiting a decision', pendingDocs]
+  ]
+  const reportTitle = 'TE-NDT QCMS Compliance Report'
+  // jsPDF's default font doesn't reliably render "·" — plain ASCII only in
+  // anything that ends up in the PDF report.
+  const reportSubtitle = `${regionName ?? 'All regions'} - Generated ${new Date().toLocaleString('en-ZA')}`
+
+  async function handleDownload() {
+    setError(null)
+    const rows = exportRows()
+    if (rows.length === 0) { setError('Nothing to export for this selection.'); return }
+
+    setExporting(true)
+    try {
+      if (exportFormat === 'csv') downloadCsv(rows, exportFilename)
+      else if (exportFormat === 'excel') await downloadExcel(rows, exportFilename)
+      else if (exportFormat === 'pdf') {
+        await downloadPdf({ rows: buildReportRows(rows), summary: reportSummary, title: reportTitle, subtitle: reportSubtitle, filename: exportFilename })
+      } else if (exportFormat === 'word') {
+        await downloadWord({ rows: buildReportRows(rows), summary: reportSummary, title: reportTitle, subtitle: reportSubtitle, filename: exportFilename })
+      }
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setExporting(false)
+    }
+  }
 
   return (
     <div className="stack">
@@ -95,12 +148,19 @@ export default function ManagerDashboard() {
             {depots.map((d) => <option key={d.code} value={d.code}>{d.name} ({d.code})</option>)}
           </select>
           {region && <button className="small" onClick={() => setRegion('')}>Clear filter</button>}
+          <select value={exportFormat} onChange={(e) => setExportFormat(e.target.value)} style={{ width: 170 }}>
+            {EXPORT_FORMATS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+          <button className="small" onClick={handleDownload} disabled={exporting || sPeople.length === 0}>
+            {exporting ? 'Preparing…' : 'Download'}
+          </button>
         </div>
       </div>
 
       {region && (
         <div className="notice">
           Showing {regionName} only. Click the region again in "Personnel by region" below, or use "Clear filter", to see everyone.
+          The download above will export just {regionName} too.
         </div>
       )}
 
@@ -135,15 +195,17 @@ export default function ManagerDashboard() {
 
       <div className="grid grid-2">
         <Panel title="Personnel by region" action={region && <span className="small muted">filtering: {regionName}</span>}>
-          <BarList
-            rows={depotRows}
+          <Donut
+            segments={depotRows}
+            centerLabel={people.length}
+            centerSub="People"
             selectedKey={region}
             onSelect={(key) => setRegion((current) => (current === key ? '' : key))}
           />
-          <p className="hint" style={{ marginTop: 10 }}>Click a region to filter the whole dashboard by it.</p>
+          <p className="hint" style={{ marginTop: 10 }}>Click a region (ring or legend) to filter the whole dashboard by it.</p>
         </Panel>
         <Panel title="Personnel by role">
-          <BarList rows={roleRows} />
+          <Donut segments={roleRows} centerLabel={sPeople.length} centerSub="People" />
         </Panel>
       </div>
 
@@ -157,7 +219,7 @@ export default function ManagerDashboard() {
 
       <Panel title="Quick links">
         <div className="row">
-          <Link to="/roster" className="btn">Roster</Link>
+          <Link to="/roster" className="btn">Compliance</Link>
           <Link to="/people" className="btn">People</Link>
           <Link to="/trail" className="btn">Audit trail</Link>
         </div>

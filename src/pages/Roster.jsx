@@ -60,7 +60,7 @@ export default function Roster() {
           <p className="eyebrow">
             {profile.role === 'manager' ? 'All personnel' : 'Personnel you supervise'}
           </p>
-          <h1>Roster</h1>
+          <h1>Compliance</h1>
         </div>
         <div className="row">
           {['all', 'blocking', 'expiring', 'pending'].map((f) => (

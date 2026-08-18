@@ -188,12 +188,14 @@ revoke all on function public.write_audit(text,text,uuid,uuid,text,text,jsonb,js
 create or replace function public.record_upload(
   p_subject uuid, p_type uuid, p_path text, p_file_name text, p_hash text,
   p_size bigint, p_mime text, p_issued date, p_expires date, p_request uuid,
-  p_never_expires boolean default false
+  p_never_expires boolean default false, p_method public.ndt_method default null,
+  p_level smallint default null
 ) returns public.documents
 language plpgsql security definer set search_path = public as $$
 declare
   v_role         text := public.current_role_of();
   v_manager_only boolean;
+  v_per_method   boolean;
   v_doc          public.documents;
   v_prev         public.documents;
 begin
@@ -206,30 +208,48 @@ begin
     raise exception 'not permitted to upload for this person';
   end if;
 
-  select manager_only into v_manager_only from public.document_types where id = p_type;
+  select manager_only, per_method into v_manager_only, v_per_method
+    from public.document_types where id = p_type;
   if v_manager_only and v_role <> 'manager' then
     perform public.write_audit('document.uploaded','document',null,p_subject,'failure',
       'this document type is manager only', null, null, p_request);
     raise exception 'only a manager may upload this document type';
   end if;
+  if v_per_method and p_method is null then
+    raise exception 'choose which NDT method this certificate covers';
+  end if;
+  if v_per_method and (p_level is null or p_level not between 1 and 3) then
+    raise exception 'choose the certified level (1, 2 or 3)';
+  end if;
+  if not v_per_method then
+    p_method := null;
+    p_level := null;
+  end if;
 
+  -- Scoped by method AND level: a new PT Level 2 certificate supersedes a
+  -- person's previous PT Level 2 certificate only — never their PT Level 1,
+  -- since a person can hold both at once as independent, coexisting
+  -- qualifications. is not distinct from also makes this correct for
+  -- ordinary (method-less) document types.
   select * into v_prev from public.documents
-   where subject_id = p_subject and document_type_id = p_type and status <> 'superseded'
+   where subject_id = p_subject and document_type_id = p_type and status not in ('superseded', 'deleted')
+     and method is not distinct from p_method
+     and level is not distinct from p_level
    order by created_at desc limit 1;
 
   insert into public.documents
     (subject_id, document_type_id, storage_path, file_name, file_hash, mime_type,
-     size_bytes, issued_on, expires_on, never_expires, uploaded_by)
+     size_bytes, issued_on, expires_on, never_expires, method, level, uploaded_by)
   values
     (p_subject, p_type, p_path, p_file_name, p_hash, p_mime,
-     p_size, p_issued, p_expires, p_never_expires, auth.uid())
+     p_size, p_issued, p_expires, p_never_expires, p_method, p_level, auth.uid())
   returning * into v_doc;
 
   if v_prev.id is not null then
     update public.documents set status = 'superseded', superseded_by = v_doc.id
      where id = v_prev.id;
     perform public.write_audit('document.superseded','document',v_prev.id,p_subject,'success',
-      'replaced by newer submission', to_jsonb(v_prev), to_jsonb(v_doc), p_request);
+      'replaced by newer submission for the same method', to_jsonb(v_prev), to_jsonb(v_doc), p_request);
   end if;
 
   perform public.write_audit('document.uploaded','document',v_doc.id,p_subject,'success',
@@ -244,9 +264,11 @@ create or replace function public.decide_document(
 ) returns public.documents
 language plpgsql security definer set search_path = public as $$
 declare
-  v_role text := public.current_role_of();
+  v_role   text := public.current_role_of();
   v_before public.documents;
   v_after  public.documents;
+  v_qual_before public.staff_ndt_qualifications;
+  v_qual_after  public.staff_ndt_qualifications;
 begin
   if v_role <> 'manager' then
     raise exception 'only a manager may approve or reject a document';
@@ -271,6 +293,68 @@ begin
     case when p_status = 'approved' then 'document.approved' else 'document.rejected' end,
     'document', p_document, v_after.subject_id, 'success', p_reason,
     to_jsonb(v_before), to_jsonb(v_after), p_request);
+
+  -- Approving a per-method certificate is the manager's confirmation that
+  -- it's real, so it writes the qualification directly rather than leaving
+  -- the two to silently drift apart — the certificate and the recorded
+  -- level are the same fact, decided at the same moment.
+  if p_status = 'approved' and v_after.method is not null and v_after.level is not null then
+    select * into v_qual_before from public.staff_ndt_qualifications
+     where subject_id = v_after.subject_id and method = v_after.method and level = v_after.level;
+
+    insert into public.staff_ndt_qualifications (subject_id, method, level, updated_at)
+    values (v_after.subject_id, v_after.method, v_after.level, now())
+    on conflict (subject_id, method, level) do update set updated_at = now()
+    returning * into v_qual_after;
+
+    perform public.write_audit('ndt_qualification.set','staff_ndt_qualification',null,v_after.subject_id,'success',
+      'Set automatically by approving ' || v_after.method || ' Level ' || v_after.level || ' certificate',
+      to_jsonb(v_qual_before), to_jsonb(v_qual_after), p_request);
+  end if;
+
+  return v_after;
+end;
+$$;
+
+-- Retracts a mistaken upload (wrong file, wrong person, duplicate, test
+-- upload) rather than truly deleting it: the row and the stored file stay,
+-- audited like every other action, but the document drops out of the
+-- person's active record and compliance status the same way a superseded
+-- one does. Restricted to pending or rejected documents — an approved
+-- certificate is live compliance evidence and can only be superseded by a
+-- new submission, never deleted out from under someone.
+create or replace function public.delete_document(
+  p_document uuid, p_reason text, p_request uuid
+) returns public.documents
+language plpgsql security definer set search_path = public as $$
+declare
+  v_role   text := public.current_role_of();
+  v_before public.documents;
+  v_after  public.documents;
+begin
+  select * into v_before from public.documents where id = p_document;
+  if v_before.id is null then raise exception 'document not found'; end if;
+
+  if not (v_role = 'manager' or public.supervises(v_before.subject_id)) then
+    perform public.write_audit('document.deleted','document',p_document,v_before.subject_id,'failure',
+      'caller not permitted', null, null, p_request);
+    raise exception 'only a manager, or the supervisor of this person, may delete a document';
+  end if;
+  if v_before.status not in ('pending','rejected') then
+    raise exception 'only a pending or rejected document may be deleted; an approved certificate can only be superseded by a new submission';
+  end if;
+  if coalesce(btrim(p_reason),'') = '' then
+    raise exception 'say why this document is being deleted';
+  end if;
+
+  update public.documents
+     set status = 'deleted', decided_by = auth.uid(),
+         decided_at = now(), decision_reason = p_reason
+   where id = p_document
+  returning * into v_after;
+
+  perform public.write_audit('document.deleted','document',p_document,v_after.subject_id,'success',
+    p_reason, to_jsonb(v_before), to_jsonb(v_after), p_request);
 
   return v_after;
 end;
@@ -413,10 +497,12 @@ begin
 end;
 $$;
 
--- p_level null clears the qualification (person no longer certified in that
--- method). A level change is audited the same way a role change is.
+-- A person can hold more than one level of the same method at once, so this
+-- toggles one specific (method, level) pair on or off rather than setting
+-- "the" level for a method — p_granted true adds/confirms it, false removes
+-- it. A level change is audited the same way a role change is.
 create or replace function public.set_ndt_qualification(
-  p_subject uuid, p_method public.ndt_method, p_level smallint, p_request uuid
+  p_subject uuid, p_method public.ndt_method, p_level smallint, p_granted boolean, p_request uuid
 ) returns public.staff_ndt_qualifications
 language plpgsql security definer set search_path = public as $$
 declare
@@ -425,22 +511,24 @@ declare
   v_after  public.staff_ndt_qualifications;
 begin
   if v_role <> 'manager' then raise exception 'only a manager may set an NDT qualification'; end if;
+  if p_level not between 1 and 4 then raise exception 'level must be between 1 and 4'; end if;
 
   select * into v_before from public.staff_ndt_qualifications
-   where subject_id = p_subject and method = p_method;
+   where subject_id = p_subject and method = p_method and level = p_level;
 
-  if p_level is null then
-    delete from public.staff_ndt_qualifications where subject_id = p_subject and method = p_method;
-    perform public.write_audit('ndt_qualification.cleared','staff_ndt_qualification',null,p_subject,'success',
-      null, to_jsonb(v_before), null, p_request);
+  if not p_granted then
+    delete from public.staff_ndt_qualifications
+     where subject_id = p_subject and method = p_method and level = p_level;
+    if v_before.subject_id is not null then
+      perform public.write_audit('ndt_qualification.cleared','staff_ndt_qualification',null,p_subject,'success',
+        null, to_jsonb(v_before), null, p_request);
+    end if;
     return v_before;
   end if;
 
-  if p_level not between 1 and 3 then raise exception 'level must be between 1 and 3'; end if;
-
   insert into public.staff_ndt_qualifications (subject_id, method, level, updated_at)
   values (p_subject, p_method, p_level, now())
-  on conflict (subject_id, method) do update set level = excluded.level, updated_at = now()
+  on conflict (subject_id, method, level) do update set updated_at = now()
   returning * into v_after;
 
   perform public.write_audit('ndt_qualification.set','staff_ndt_qualification',null,p_subject,'success',

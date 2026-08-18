@@ -68,7 +68,7 @@ export default function MyProfile() {
       <div className="page-head">
         <div>
           <p className="eyebrow">{profile.sap_no ?? 'Your account'}</p>
-          <h1>My profile</h1>
+          <h1>Account</h1>
         </div>
       </div>
 
