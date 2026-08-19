@@ -32,6 +32,9 @@ export const listPeople = () =>
 export const listDepots = () =>
   supabase.from('depots').select('*').order('name').then(unwrap)
 
+export const listPositions = () =>
+  supabase.from('positions').select('*').order('name').then(unwrap)
+
 export const listNdtQualifications = (subjectId) =>
   supabase.from('staff_ndt_qualifications').select('*').eq('subject_id', subjectId).then(unwrap)
 
@@ -149,6 +152,14 @@ export const updateProfileDetails = (subjectId, {
     p_subject: subjectId, p_full_name: fullName, p_sap_no: sapNo, p_depot_code: depotCode,
     p_id_number: idNumber, p_position: position, p_supervisor_discipline: supervisorDiscipline,
     p_request: newRequestId()
+  }).then(unwrap)
+
+export const addPosition = (name) =>
+  supabase.rpc('add_position', { p_name: name, p_request: newRequestId() }).then(unwrap)
+
+export const updatePosition = (id, { name = null, active = null } = {}) =>
+  supabase.rpc('update_position', {
+    p_id: id, p_name: name, p_active: active, p_request: newRequestId()
   }).then(unwrap)
 
 export const recordEmploymentEnd = (subjectId, endedOn, reason) =>

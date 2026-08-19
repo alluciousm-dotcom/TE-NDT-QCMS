@@ -3,7 +3,8 @@ import { useParams, Link } from 'react-router-dom'
 import {
   getPersonMatrix, getProfile, listDocuments, listDocumentTypes, listReviews,
   listAudits, decideDocument, deleteDocument, openAudit, decideAudit, signedUrl, logRecordView, runAiReview,
-  listDepots, updateProfileDetails, listNdtQualifications, setNdtQualification, recordEmploymentEnd
+  listDepots, listPositions, addPosition, updateProfileDetails, listNdtQualifications, setNdtQualification,
+  recordEmploymentEnd
 } from '../lib/api'
 import { Panel, Loading, ErrorNote, Pill, ValidityStrip, Findings, Field, Empty } from '../components/ui'
 import UploadForm from '../components/UploadForm'
@@ -59,6 +60,10 @@ export default function PersonRecord() {
   const [reviews, setReviews] = useState([])
   const [audits, setAudits] = useState([])
   const [depots, setDepots] = useState([])
+  const [positions, setPositions] = useState([])
+  const [addingPosition, setAddingPosition] = useState(false)
+  const [newPositionName, setNewPositionName] = useState('')
+  const [positionBusy, setPositionBusy] = useState(false)
   const [quals, setQuals] = useState([])
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(null)
@@ -85,11 +90,11 @@ export default function PersonRecord() {
   const load = useCallback(() => {
     Promise.all([
       getProfile(id), getPersonMatrix(id), listDocuments(id),
-      listDocumentTypes(), listReviews(id), listAudits(id), listDepots(), listNdtQualifications(id)
+      listDocumentTypes(), listReviews(id), listAudits(id), listDepots(), listPositions(), listNdtQualifications(id)
     ])
-      .then(([p, m, d, t, r, a, dep, q]) => {
+      .then(([p, m, d, t, r, a, dep, pos, q]) => {
         setPerson(p); setMatrix(m); setDocs(d); setTypes(t); setReviews(r); setAudits(a)
-        setDepots(dep); setQuals(q)
+        setDepots(dep); setPositions(pos); setQuals(q)
         setDetails({
           fullName: p.full_name ?? '', sapNo: p.sap_no ?? '', depotCode: p.depot_code ?? '',
           idNumber: p.id_number ?? '', position: p.position ?? '', supervisorDiscipline: p.supervisor_discipline ?? ''
@@ -202,6 +207,20 @@ export default function PersonRecord() {
     } catch (e) { setError(e.message) } finally { setDetailsBusy(false) }
   }
 
+  async function submitNewPosition() {
+    setError(null)
+    const name = newPositionName.trim()
+    if (!name) { setError('Enter a position name.'); return }
+    setPositionBusy(true)
+    try {
+      const created = await addPosition(name)
+      setPositions((p) => [...p, created].sort((a, b) => a.name.localeCompare(b.name)))
+      setDetails((d) => ({ ...d, position: created.name }))
+      setNewPositionName('')
+      setAddingPosition(false)
+    } catch (e) { setError(e.message) } finally { setPositionBusy(false) }
+  }
+
   async function saveQualifications() {
     setError(null)
     setQualBusy(true)
@@ -291,11 +310,43 @@ export default function PersonRecord() {
             </div>
             <div className="grid grid-2" style={{ marginTop: 14 }}>
               <Field label="Position">
-                <input
-                  value={details.position}
-                  onChange={(e) => setDetails((d) => ({ ...d, position: e.target.value }))}
-                  placeholder="NDT Technician"
-                />
+                {addingPosition ? (
+                  <div className="row">
+                    <input
+                      value={newPositionName}
+                      onChange={(e) => setNewPositionName(e.target.value)}
+                      placeholder="e.g. Rigger"
+                      autoFocus
+                    />
+                    <button type="button" className="small" disabled={positionBusy} onClick={submitNewPosition}>
+                      {positionBusy ? 'Adding' : 'Add'}
+                    </button>
+                    <button
+                      type="button" className="link"
+                      onClick={() => { setAddingPosition(false); setNewPositionName('') }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div className="row">
+                    <select
+                      value={details.position}
+                      onChange={(e) => setDetails((d) => ({ ...d, position: e.target.value }))}
+                    >
+                      <option value="">Not set</option>
+                      {details.position && !positions.some((p) => p.name === details.position) && (
+                        <option value={details.position}>{details.position}</option>
+                      )}
+                      {positions.filter((p) => p.active || p.name === details.position).map((p) => (
+                        <option key={p.id} value={p.name}>{p.name}</option>
+                      ))}
+                    </select>
+                    <button type="button" className="small" onClick={() => setAddingPosition(true)}>
+                      + New
+                    </button>
+                  </div>
+                )}
               </Field>
               {person.role === 'supervisor' && (
                 <Field label="Discipline">

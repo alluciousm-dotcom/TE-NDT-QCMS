@@ -1,28 +1,34 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  listPeople, listDepots, setUserRole, assignSupervisor, provisionPerson, resetPersonPassword
+  listPeople, listDepots, listPositions, addPosition, setUserRole, assignSupervisor,
+  provisionPerson, resetPersonPassword, updateProfileDetails
 } from '../lib/api'
 import { Panel, Loading, ErrorNote, Empty, Field } from '../components/ui'
 import { formatDate } from '../lib/format'
 import { useSession } from '../App'
 
-const BLANK_NEW_PERSON = { sapNo: '', fullName: '', depotCode: '', role: 'staff', supervisorDiscipline: '' }
+const BLANK_NEW_PERSON = { sapNo: '', fullName: '', depotCode: '', role: 'staff', supervisorDiscipline: '', position: '' }
 
 export default function People() {
   const { profile } = useSession()
   const [people, setPeople] = useState(null)
   const [depots, setDepots] = useState([])
+  const [positions, setPositions] = useState([])
+  const [addingPosition, setAddingPosition] = useState(false)
+  const [newPositionName, setNewPositionName] = useState('')
+  const [positionBusy, setPositionBusy] = useState(false)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(null)
   const [pending, setPending] = useState({})
+  const [pendingPosition, setPendingPosition] = useState({})
   const [assign, setAssign] = useState({ supervisor: '', staff: '' })
   const [newPerson, setNewPerson] = useState(BLANK_NEW_PERSON)
   const [notice, setNotice] = useState(null)
 
   const load = useCallback(() => {
-    Promise.all([listPeople(), listDepots()])
-      .then(([p, d]) => { setPeople(p); setDepots(d) })
+    Promise.all([listPeople(), listDepots(), listPositions()])
+      .then(([p, d, pos]) => { setPeople(p); setDepots(d); setPositions(pos) })
       .catch((e) => setError(e.message))
   }, [])
 
@@ -61,9 +67,38 @@ export default function People() {
     }
     setBusy('add')
     try {
-      await provisionPerson(newPerson)
+      const { profile: created } = await provisionPerson(newPerson)
+      if (newPerson.position) {
+        await updateProfileDetails(created.id, { position: newPerson.position })
+      }
       setNotice(`Account created. Sign-in SAP number is ${newPerson.sapNo.trim()}; the starting password is the same.`)
       setNewPerson(BLANK_NEW_PERSON)
+      load()
+    } catch (e) { setError(e.message) } finally { setBusy(null) }
+  }
+
+  async function submitNewPosition(applyTo) {
+    setError(null)
+    const name = newPositionName.trim()
+    if (!name) { setError('Enter a position name.'); return }
+    setPositionBusy(true)
+    try {
+      const created = await addPosition(name)
+      setPositions((p) => [...p, created].sort((a, b) => a.name.localeCompare(b.name)))
+      applyTo(created.name)
+      setNewPositionName('')
+      setAddingPosition(false)
+    } catch (e) { setError(e.message) } finally { setPositionBusy(false) }
+  }
+
+  async function changePosition(person) {
+    const next = pendingPosition[person.id]
+    setError(null)
+    if (next === undefined || next === (person.position ?? '')) { setError('Choose a different position first.'); return }
+    setBusy(`position-${person.id}`)
+    try {
+      await updateProfileDetails(person.id, { position: next || null })
+      setPendingPosition((p) => ({ ...p, [person.id]: undefined }))
       load()
     } catch (e) { setError(e.message) } finally { setBusy(null) }
   }
@@ -118,7 +153,7 @@ export default function People() {
               />
             </Field>
           </div>
-          <div className="grid grid-2" style={{ marginTop: 14 }}>
+          <div className="grid grid-3" style={{ marginTop: 14 }}>
             <Field label="Region">
               <select
                 value={newPerson.depotCode}
@@ -137,6 +172,45 @@ export default function People() {
                 <option value="supervisor">Supervisor</option>
                 <option value="manager">Manager</option>
               </select>
+            </Field>
+            <Field label="Position (optional)">
+              {addingPosition ? (
+                <div className="row">
+                  <input
+                    value={newPositionName}
+                    onChange={(e) => setNewPositionName(e.target.value)}
+                    placeholder="e.g. Rigger"
+                    autoFocus
+                  />
+                  <button
+                    type="button" className="small" disabled={positionBusy}
+                    onClick={() => submitNewPosition((name) => setNewPerson((p) => ({ ...p, position: name })))}
+                  >
+                    {positionBusy ? 'Adding' : 'Add'}
+                  </button>
+                  <button
+                    type="button" className="link"
+                    onClick={() => { setAddingPosition(false); setNewPositionName('') }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div className="row">
+                  <select
+                    value={newPerson.position}
+                    onChange={(e) => setNewPerson((p) => ({ ...p, position: e.target.value }))}
+                  >
+                    <option value="">Not set</option>
+                    {positions.filter((p) => p.active).map((p) => (
+                      <option key={p.id} value={p.name}>{p.name}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="small" onClick={() => setAddingPosition(true)}>
+                    + New
+                  </button>
+                </div>
+              )}
             </Field>
           </div>
           {newPerson.role === 'supervisor' && (
@@ -179,6 +253,7 @@ export default function People() {
                 <th>Role</th>
                 <th>Added</th>
                 <th style={{ width: 260 }}>Change role</th>
+                <th style={{ width: 220 }}>Change position</th>
                 <th></th>
               </tr>
             </thead>
@@ -214,6 +289,26 @@ export default function People() {
                         </button>
                       </div>
                     )}
+                  </td>
+                  <td>
+                    <div className="row">
+                      <select
+                        value={pendingPosition[p.id] ?? p.position ?? ''}
+                        onChange={(e) => setPendingPosition((s) => ({ ...s, [p.id]: e.target.value }))}
+                        style={{ width: 150 }}
+                      >
+                        <option value="">Not set</option>
+                        {p.position && !positions.some((pos) => pos.name === p.position) && (
+                          <option value={p.position}>{p.position}</option>
+                        )}
+                        {positions.filter((pos) => pos.active || pos.name === p.position).map((pos) => (
+                          <option key={pos.id} value={pos.name}>{pos.name}</option>
+                        ))}
+                      </select>
+                      <button className="small" disabled={busy === `position-${p.id}`} onClick={() => changePosition(p)}>
+                        Apply
+                      </button>
+                    </div>
                   </td>
                   <td>
                     <button className="small" disabled={busy === `reset-${p.id}`} onClick={() => resetPassword(p)}>
